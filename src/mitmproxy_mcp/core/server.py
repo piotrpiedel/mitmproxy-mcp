@@ -390,23 +390,11 @@ def _json_type_name(value: Any) -> str:
 
 @mcp.tool()
 async def get_flow_schema(flow_id: str) -> str:
-    """Infer a simple schema from a flow's JSON response body."""
-    flow_data = controller.recorder.get_flow_detail(flow_id)
-    if not flow_data:
+    """Infer a simple top-level schema from a flow's JSON response body.
+    For deeper schema with nesting, use infer_response_schema instead."""
+    body_content = controller.recorder.db.get_response_body(flow_id)
+    if body_content is None:
         return "Flow not found."
-
-    response = flow_data.get("response")
-    body_content = response.get("body_preview") if response else None
-
-    flow_obj = controller.recorder.db.get_flow_object(flow_id)
-    response_obj = getattr(flow_obj, "response", None) if flow_obj else None
-    full_content = getattr(response_obj, "content", None) if response_obj else None
-    if full_content:
-        if isinstance(full_content, bytes):
-            body_content = full_content.decode("utf-8", errors="replace")
-        else:
-            body_content = str(full_content)
-
     if not body_content:
         return "Flow has no response body."
 
@@ -414,6 +402,13 @@ async def get_flow_schema(flow_id: str) -> str:
         data = json.loads(body_content)
     except json.JSONDecodeError:
         return "Response body is not valid JSON."
+
+    if isinstance(data, list):
+        if data and isinstance(data[0], dict):
+            schema = {"type": "array", "length": len(data), "item_keys": {key: _json_type_name(value) for key, value in data[0].items()}}
+        else:
+            schema = {"type": "array", "length": len(data)}
+        return json.dumps(schema, indent=2)
 
     if not isinstance(data, dict):
         return f"Response is JSON but not an object (it's {type(data).__name__})."
@@ -481,23 +476,18 @@ async def extract_from_flow(flow_id: str, json_path: str = None, css_selector: s
         json_path: A JSONPath expression to extract data from a JSON response
         css_selector: A CSS selector to extract data from an HTML/XML response
     """
-    flow_data = controller.recorder.get_flow_detail(flow_id)
-    if not flow_data:
+    body_content = controller.recorder.db.get_response_body(flow_id)
+    if body_content is None:
         return "No matching flow."
-
-    response = flow_data.get("response")
-    body_content = response.get("body_preview") if response else None
     if not body_content:
         return "Flow has no response body."
 
     if json_path:
         try:
-            # Parse body as JSON
             data = json.loads(body_content)
-            # Apply JSONPath
             jsonpath_expr = parse_jsonpath(json_path)
             matches = [match.value for match in jsonpath_expr.find(data)]
-            return json.dumps(matches, indent=2)
+            return json.dumps(matches, indent=2, ensure_ascii=False)
         except json.JSONDecodeError:
             return "Response body is not valid JSON."
         except Exception as e:
@@ -512,7 +502,7 @@ async def extract_from_flow(flow_id: str, json_path: str = None, css_selector: s
             for el in elements:
                 result.append({"text": el.get_text(strip=True), "html": str(el), "attrs": el.attrs})
 
-            return json.dumps(result, indent=2)
+            return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
             return f"Error executing CSS Selector: {str(e)}"
 

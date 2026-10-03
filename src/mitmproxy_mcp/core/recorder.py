@@ -463,6 +463,14 @@ class TrafficDB:
             return "Error generating curl command"
 
     # Helper to reconstruct a minimal request for replay
+    def get_response_body(self, flow_id: str) -> Optional[str]:
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                "SELECT response_body FROM flows WHERE id = ?", (flow_id,)
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+
     def get_flow_object(self, flow_id: str) -> Optional[SimpleRequest]:
         with self._get_conn() as conn:
             conn.row_factory = sqlite3.Row
