@@ -1,6 +1,9 @@
 import asyncio
 import logging
 import os
+import shutil
+import signal
+import subprocess
 import sys
 import json
 from pathlib import Path
@@ -59,6 +62,8 @@ class MitmController:
         self.session_variables = {}
         self.dump_file = dump_file
         self.cli_upstream_proxy: Optional[str] = None
+        self.browser_process: Optional[subprocess.Popen] = None
+        self.browser_profile_dir: Optional[str] = None
 
     def _get_verify_param(self, verify_override: Optional[bool] = None) -> Any:
         if verify_override is not None:
@@ -1236,6 +1241,197 @@ async def generate_scraper_code(flow_ids: str, target_framework: str = "curl_cff
     return render_scraper_code(target_framework, normalized_flows)
 
 
+_CHROME_SEARCH_PATHS = [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/opt/google/chrome/chrome",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/snap/bin/chromium",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+]
+
+
+def _find_chrome() -> Optional[str]:
+    for path in _CHROME_SEARCH_PATHS:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return shutil.which("google-chrome") or shutil.which("chromium")
+
+
+@mcp.tool()
+async def launch_chrome_with_proxy(
+    url: str = "",
+    profile: str = "",
+    ignore_cert_errors: bool = True,
+) -> str:
+    """
+    Launch the system's real Chrome/Chromium browser with traffic routed through mitmproxy.
+    Opens a visible browser window — you (or the user) interact with it normally,
+    and all HTTP/HTTPS traffic is captured for analysis.
+    Starts the proxy automatically if it is not already running.
+    Call close_browser() when done.
+
+    Args:
+        url: URL to open on launch (empty = blank tab)
+        profile: Custom Chrome profile directory (default: ~/.chrome-mitm-profile)
+        ignore_cert_errors: Skip TLS cert verification for mitmproxy CA (default True)
+    """
+    if controller.browser_process and controller.browser_process.poll() is None:
+        return json.dumps({"error": "Browser already running. Call close_browser() first."})
+
+    chrome_path = _find_chrome()
+    if not chrome_path:
+        return json.dumps({"error": "Chrome/Chromium not found. Install Google Chrome."})
+
+    if not controller.running:
+        await controller.start()
+        logger.info("launch_chrome_autostarted_proxy")
+
+    profile_dir = profile or os.path.expanduser("~/.chrome-mitm-profile")
+    controller.browser_profile_dir = profile_dir
+
+    cmd = [
+        chrome_path,
+        f"--proxy-server=http://127.0.0.1:{controller.port}",
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--start-maximized",
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
+    ]
+    if ignore_cert_errors:
+        cmd.append("--ignore-certificate-errors")
+    if url:
+        cmd.append(url)
+
+    controller.browser_process = subprocess.Popen(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    logger.info("chrome_launched", pid=controller.browser_process.pid, profile=profile_dir)
+
+    return json.dumps(
+        {
+            "chrome": chrome_path,
+            "pid": controller.browser_process.pid,
+            "proxy": f"http://127.0.0.1:{controller.port}",
+            "profile": profile_dir,
+            "message": "Chrome launched with proxy. Browse normally — all traffic is captured. Call close_browser() when done.",
+        },
+        indent=2,
+    )
+
+
+@mcp.tool()
+async def close_browser() -> str:
+    """
+    Close the Chrome browser that was launched by launch_chrome_with_proxy.
+    """
+    proc = controller.browser_process
+    if not proc:
+        return "No browser was launched by this session."
+    if proc.poll() is not None:
+        controller.browser_process = None
+        return "Browser already closed."
+
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=3)
+    except Exception as e:
+        return f"Error closing browser: {e}"
+
+    controller.browser_process = None
+    logger.info("chrome_closed")
+    return "Browser closed."
+
+
+@mcp.tool()
+async def browse_with_proxy(
+    url: str,
+    wait_for: str = "networkidle",
+    timeout_ms: int = 15000,
+    headless: bool = True,
+    extra_wait_ms: int = 3000,
+) -> str:
+    """
+    Open a URL in a Playwright Chromium browser routed through the mitmproxy proxy.
+    All HTTP/HTTPS traffic is captured and available via get_traffic_summary / get_api_patterns.
+    Starts the proxy automatically if it is not already running.
+    Requires Playwright browsers: run 'playwright install chromium' once before first use.
+
+    Args:
+        url: URL to open
+        wait_for: Navigation end condition — 'networkidle', 'load', or 'domcontentloaded'
+        timeout_ms: Navigation timeout in milliseconds (default 15000)
+        headless: Run the browser without a visible window (default True)
+        extra_wait_ms: Additional wait after page load for JS-triggered fetches (default 3000)
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return "playwright is not installed. Run: playwright install chromium"
+
+    if not controller.running:
+        result = await controller.start()
+        logger.info("browse_with_proxy_autostarted_proxy", result=result)
+
+    proxy_url = f"http://127.0.0.1:{controller.port}"
+
+    def _count_flows() -> int:
+        with controller.recorder.db._get_conn() as conn:
+            return conn.execute("SELECT COUNT(*) FROM flows").fetchone()[0]
+
+    before = _count_flows()
+    domain = urlparse(url).netloc
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=headless,
+                proxy={"server": proxy_url},
+                args=["--ignore-certificate-errors"],
+            )
+            context = await browser.new_context(ignore_https_errors=True)
+            page = await context.new_page()
+            try:
+                await page.goto(url, wait_until=wait_for, timeout=timeout_ms)
+            except Exception:
+                # networkidle timeout is normal for SPAs with polling — not a hard failure
+                pass
+            if extra_wait_ms > 0:
+                await asyncio.sleep(extra_wait_ms / 1000)
+            await browser.close()
+    except Exception as e:
+        err = str(e)
+        if "Executable doesn't exist" in err or "playwright install" in err.lower():
+            return "Playwright browser binaries not found. Run: playwright install chromium"
+        return f"Browser error: {err}"
+
+    after = _count_flows()
+
+    return json.dumps(
+        {
+            "url": url,
+            "proxy": proxy_url,
+            "flows_captured": after - before,
+            "next_steps": [
+                f"get_api_patterns(domain='{domain}')",
+                "get_traffic_summary(limit=20)",
+                f"export_openapi_spec(domain='{domain}')",
+                f"generate_scraper_code(flow_ids='...')",
+            ],
+        },
+        indent=2,
+    )
+
+
+@mcp.tool()
 def start():
     """Entry point for running the server directly."""
     import argparse
