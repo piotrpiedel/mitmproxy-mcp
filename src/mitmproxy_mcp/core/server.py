@@ -1432,6 +1432,247 @@ async def browse_with_proxy(
 
 
 @mcp.tool()
+async def get_response_body(
+    flow_id: str,
+    json_path: str = "",
+    max_chars: int = 50000,
+) -> str:
+    """
+    Get the full response body of a captured flow, optionally filtered by JSONPath.
+    Unlike inspect_flow (2000 char preview), this returns the complete response.
+    Args:
+        flow_id: The ID of the captured flow
+        json_path: Optional JSONPath expression to extract specific data (e.g. '$.listings[0]', '$.cities[*].name')
+        max_chars: Maximum characters to return (default 50000). Use 0 for unlimited.
+    """
+    body = controller.recorder.db.get_response_body(flow_id)
+    if body is None:
+        return "Flow not found."
+    if not body:
+        return "Flow has no response body."
+
+    if json_path:
+        try:
+            data = json.loads(body)
+            expr = parse_jsonpath(json_path)
+            matches = [m.value for m in expr.find(data)]
+            if not matches:
+                return f"No matches for JSONPath: {json_path}"
+            body = json.dumps(matches if len(matches) > 1 else matches[0], indent=2, ensure_ascii=False)
+        except json.JSONDecodeError:
+            return "Response body is not valid JSON."
+        except Exception as e:
+            return f"JSONPath error: {e}"
+
+    if max_chars and len(body) > max_chars:
+        return body[:max_chars] + f"\n\n... [TRUNCATED at {max_chars} chars, total {len(body)}]"
+    return body
+
+
+@mcp.tool()
+async def get_api_summary(
+    domain: str = "",
+    content_type: str = "json",
+    min_calls: int = 1,
+) -> str:
+    """
+    Compact API endpoint summary — one line per endpoint, no headers, no flow IDs.
+    Designed for quick overview without flooding context.
+    Args:
+        domain: Filter by domain (e.g. 'rynkoradar.pl')
+        content_type: Filter by response content type: 'json', 'html', 'text', or 'all' (default: 'json')
+        min_calls: Only show endpoints with at least this many calls (default: 1)
+    """
+    flows = controller.recorder.get_all_for_analysis(lightweight=True)
+
+    if domain:
+        flows = [f for f in flows if domain in f["request"]["url"]]
+
+    clusters: Dict[str, Dict[str, Any]] = {}
+    for f in flows:
+        parsed = urlparse(f["request"]["url"])
+        normalized_path, _ = _normalize_path(parsed.path)
+        method = f["request"]["method"]
+        key = f"{method} {normalized_path}"
+
+        if key not in clusters:
+            clusters[key] = {
+                "query_params": set(),
+                "status_codes": Counter(),
+                "content_types": Counter(),
+                "count": 0,
+                "sample_urls": [],
+                "response_sizes": [],
+            }
+
+        c = clusters[key]
+        c["count"] += 1
+        for param in parse_qs(parsed.query).keys():
+            c["query_params"].add(param)
+        if len(c["sample_urls"]) < 2:
+            c["sample_urls"].append(f["request"]["url"])
+
+        if f["response"]:
+            ct = _detect_content_type(f["response"]["headers"])
+            c["status_codes"][f["response"]["status_code"]] += 1
+            c["content_types"][ct] += 1
+
+    lines = []
+    for key, c in sorted(clusters.items(), key=lambda x: -x[1]["count"]):
+        if c["count"] < min_calls:
+            continue
+        dominant_ct = c["content_types"].most_common(1)[0][0] if c["content_types"] else "unknown"
+        if content_type != "all" and dominant_ct != content_type:
+            continue
+
+        statuses = ",".join(str(s) for s in sorted(c["status_codes"].keys()))
+        params = ", ".join(sorted(c["query_params"])) if c["query_params"] else "-"
+        lines.append(f"{key}  x{c['count']}  [{statuses}]  params: {params}")
+        for url in c["sample_urls"][:1]:
+            lines.append(f"    example: {url}")
+
+    if not lines:
+        return f"No API endpoints found matching filters (domain={domain!r}, content_type={content_type!r}, min_calls={min_calls})"
+
+    header = f"API endpoints ({len(lines) // 2} unique) for domain={domain or 'all'}"
+    return header + "\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def diff_responses(
+    flow_id_a: str,
+    flow_id_b: str,
+    json_path: str = "",
+) -> str:
+    """
+    Compare response bodies of two flows. Shows structural differences for JSON responses.
+    Args:
+        flow_id_a: First flow ID
+        flow_id_b: Second flow ID
+        json_path: Optional JSONPath to compare a specific subtree
+    """
+    body_a = controller.recorder.db.get_response_body(flow_id_a)
+    body_b = controller.recorder.db.get_response_body(flow_id_b)
+
+    if body_a is None:
+        return f"Flow {flow_id_a} not found."
+    if body_b is None:
+        return f"Flow {flow_id_b} not found."
+
+    def _extract(body: str, path: str):
+        if not path:
+            return body
+        data = json.loads(body)
+        expr = parse_jsonpath(path)
+        matches = [m.value for m in expr.find(data)]
+        return matches[0] if len(matches) == 1 else matches
+
+    try:
+        val_a = _extract(body_a, json_path)
+        val_b = _extract(body_b, json_path)
+    except json.JSONDecodeError:
+        return "One or both response bodies are not valid JSON."
+    except Exception as e:
+        return f"Extraction error: {e}"
+
+    def _schema_diff(a, b, path="$"):
+        diffs = []
+        if type(a) != type(b):
+            diffs.append(f"{path}: type {type(a).__name__} vs {type(b).__name__}")
+            return diffs
+        if isinstance(a, dict):
+            keys_a, keys_b = set(a.keys()), set(b.keys())
+            for k in keys_a - keys_b:
+                diffs.append(f"{path}.{k}: only in A")
+            for k in keys_b - keys_a:
+                diffs.append(f"{path}.{k}: only in B")
+            for k in keys_a & keys_b:
+                diffs.extend(_schema_diff(a[k], b[k], f"{path}.{k}"))
+        elif isinstance(a, list):
+            diffs.append(f"{path}: array len {len(a)} vs {len(b)}")
+            if a and b:
+                diffs.extend(_schema_diff(a[0], b[0], f"{path}[0]"))
+        elif a != b:
+            sa, sb = str(a)[:80], str(b)[:80]
+            diffs.append(f"{path}: {sa!r} vs {sb!r}")
+        return diffs
+
+    if isinstance(val_a, str) and isinstance(val_b, str):
+        try:
+            val_a = json.loads(val_a)
+            val_b = json.loads(val_b)
+        except json.JSONDecodeError:
+            from difflib import unified_diff
+            diff_lines = list(unified_diff(
+                val_a.splitlines(), val_b.splitlines(),
+                fromfile=flow_id_a[:12], tofile=flow_id_b[:12], lineterm=""
+            ))
+            return "\n".join(diff_lines[:100]) if diff_lines else "Responses are identical."
+
+    diffs = _schema_diff(val_a, val_b)
+    if not diffs:
+        return "Responses are structurally identical."
+    return f"Found {len(diffs)} differences:\n" + "\n".join(diffs[:50])
+
+
+@mcp.tool()
+async def infer_response_schema(
+    flow_id: str,
+    max_depth: int = 4,
+    sample_values: bool = True,
+) -> str:
+    """
+    Infer a detailed JSON schema from a flow's response body — types, nesting, array item schemas, sample values.
+    Much more detailed than get_flow_schema (which only does top-level keys).
+    Args:
+        flow_id: The ID of the captured flow
+        max_depth: Maximum nesting depth to traverse (default: 4)
+        sample_values: Include sample values for leaf fields (default: True)
+    """
+    body = controller.recorder.db.get_response_body(flow_id)
+    if body is None:
+        return "Flow not found."
+    if not body:
+        return "Flow has no response body."
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return "Response body is not valid JSON."
+
+    def _infer(val, depth=0):
+        if depth >= max_depth:
+            return {"type": type(val).__name__, "note": "max_depth reached"}
+        if val is None:
+            return {"type": "null"}
+        if isinstance(val, bool):
+            return {"type": "bool", **({"sample": val} if sample_values else {})}
+        if isinstance(val, int):
+            return {"type": "int", **({"sample": val} if sample_values else {})}
+        if isinstance(val, float):
+            return {"type": "float", **({"sample": val} if sample_values else {})}
+        if isinstance(val, str):
+            result = {"type": "string", "length": len(val)}
+            if sample_values:
+                result["sample"] = val[:100]
+            return result
+        if isinstance(val, list):
+            result = {"type": "array", "length": len(val)}
+            if val:
+                result["item_schema"] = _infer(val[0], depth + 1)
+            return result
+        if isinstance(val, dict):
+            result = {"type": "object", "fields": len(val)}
+            result["properties"] = {
+                k: _infer(v, depth + 1) for k, v in val.items()
+            }
+            return result
+        return {"type": type(val).__name__}
+
+    schema = _infer(data)
+    return json.dumps(schema, indent=2, ensure_ascii=False)
+
+
 def start():
     """Entry point for running the server directly."""
     import argparse
