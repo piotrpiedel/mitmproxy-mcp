@@ -53,7 +53,13 @@ async def test_add_interception_rule_reports_unsupported_regex():
 
 @pytest.mark.asyncio
 async def test_extract_session_variable_rejects_unsupported_regex(monkeypatch):
+    class Db:
+        def get_response_body(self, flow_id):
+            return "foobar"
+
     class Recorder:
+        db = Db()
+
         def get_flow_detail(self, flow_id):
             return {"response": {"body_preview": "foobar"}}
 

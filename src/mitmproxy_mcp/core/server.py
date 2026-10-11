@@ -560,12 +560,11 @@ async def extract_session_variable(
         regex_pattern: The regex pattern with capture groups
         group_index: Which regex capture group to extract (default: 1)
     """
-    flow_data = controller.recorder.get_flow_detail(flow_id)
-    if not flow_data:
+    if not controller.recorder.get_flow_detail(flow_id):
         return "No matching flow."
 
-    response = flow_data.get("response")
-    body_content = response.get("body_preview") if response else None
+    # The full stored body: tokens often sit past the 2000-char detail preview.
+    body_content = controller.recorder.db.get_response_body(flow_id)
     if not body_content:
         return "Flow has no response body."
     try:
