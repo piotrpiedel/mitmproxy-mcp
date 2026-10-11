@@ -59,6 +59,21 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+IMPORT_DIR_ENV = "MITMPROXY_MCP_IMPORT_DIR"
+
+
+def allowed_import_dirs() -> List[Path]:
+    """Directories load_traffic_file may read from.
+
+    $MITMPROXY_MCP_IMPORT_DIR (os.pathsep-separated), else the working directory, which
+    keeps the old behaviour for setups that never set the variable.
+    """
+    configured = [p for p in os.environ.get(IMPORT_DIR_ENV, "").split(os.pathsep) if p.strip()]
+    if not configured:
+        return [Path.cwd().resolve()]
+    return [Path(os.path.expanduser(p)).resolve() for p in configured]
+
+
 class MitmController:
     def __init__(self, dump_file: Optional[str] = None):
         self.master: Optional[DumpMaster] = None
@@ -485,14 +500,13 @@ async def load_traffic_file(
         [d.strip() for d in scope.split(",") if d.strip()] if scope else None
     )
 
-    # Security: Prevent path traversal and restrict to working directory
+    # Security: Prevent path traversal and restrict to the allowed import directories
     try:
         requested_path = Path(file_path).resolve()
-        base_dir = Path.cwd().resolve()
-        if not requested_path.is_relative_to(base_dir):
+        if not any(requested_path.is_relative_to(base) for base in allowed_import_dirs()):
             return json.dumps({
                 "status": "error",
-                "message": f"Security Error: Access denied to {file_path}. Path must be within the project directory."
+                "message": f"Security Error: Access denied to {file_path}. Path must be within an allowed import directory ({IMPORT_DIR_ENV}, default: the working directory)."
             })
     except Exception as e:
         return json.dumps({"status": "error", "message": f"Invalid path: {str(e)}"})

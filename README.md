@@ -85,6 +85,19 @@ claude mcp add mitmproxy-mcp -e MITMPROXY_MCP_DB=~/data/project-a.db -- uvx mitm
 
 or `"env": {"MITMPROXY_MCP_DB": "/path/to/traffic.db"}` in the JSON configuration above.
 
+### Import directories
+
+`load_traffic_file` only reads files inside an allowed directory. By default that is the
+server's working directory, so the result depends on where the server was started.
+Set `MITMPROXY_MCP_IMPORT_DIR` to a fixed location instead (several directories are
+separated with `:` on Linux/macOS, `;` on Windows):
+
+```bash
+claude mcp add mitmproxy-mcp -e MITMPROXY_MCP_IMPORT_DIR=~/captures:~/Projekty/scraper/lab-data -- uvx mitmproxy-mcp
+```
+
+When the variable is set, the working directory is no longer allowed on its own.
+
 ## Installation
 
 ### Option 1: Global Install (with `uv`)
