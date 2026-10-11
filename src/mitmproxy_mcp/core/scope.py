@@ -1,6 +1,21 @@
 from mitmproxy import http
-from typing import List
+from typing import Iterable, List
 from ..models import ScopeConfig
+
+
+def host_in_scope(host: str, domains: Iterable[str]) -> bool:
+    """True when host is one of the domains or a subdomain of one.
+
+    Matching is case-insensitive and whole-label: "example.com" covers
+    "api.example.com" but not "notexample.com" or "example.com.evil.net".
+    A leading "*." or "." on a domain is accepted and means the same thing.
+    """
+    host = host.lower().rstrip(".")
+    for domain in domains:
+        domain = domain.lower().lstrip("*.").rstrip(".")
+        if domain and (host == domain or host.endswith("." + domain)):
+            return True
+    return False
 
 
 class ScopeManager:
@@ -11,8 +26,7 @@ class ScopeManager:
 
     def is_allowed(self, flow: http.HTTPFlow) -> bool:
         if self.config.allowed_domains:
-            host = flow.request.host
-            if not any(d in host for d in self.config.allowed_domains):
+            if not host_in_scope(flow.request.host, self.config.allowed_domains):
                 return False
 
         path = flow.request.path.lower().split("?")[0]

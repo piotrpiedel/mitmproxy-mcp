@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from mitmproxy import http
 from mitmproxy.io import FlowReader
 
-from .scope import ScopeManager
+from .scope import ScopeManager, host_in_scope
 from .utils import get_safe_text
 
 
@@ -467,7 +467,7 @@ class TrafficDB:
 
                     if scope:
                         host = urlparse(flow.request.url).hostname or ""
-                        if not any(host == d or host.endswith("." + d) for d in scope):
+                        if not host_in_scope(host, scope):
                             stats["skipped"] += 1
                             continue
 

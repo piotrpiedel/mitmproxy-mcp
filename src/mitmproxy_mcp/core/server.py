@@ -263,6 +263,14 @@ async def stop_proxy() -> str:
 
 @mcp.tool()
 async def set_scope(allowed_domains: List[str]) -> str:
+    """
+    Restrict recording to the given domains; an empty list records everything.
+    Each entry matches the domain itself and its subdomains, case-insensitively:
+    "example.com" covers "api.example.com" but not "notexample.com" or
+    "example.com.evil.net". "*.example.com" is accepted and means the same.
+    Args:
+        allowed_domains: Domains to record, e.g. ["example.com", "api.other.net"]
+    """
     controller.scope_manager.update_domains(allowed_domains)
     if allowed_domains:
         domains_str = ", ".join(allowed_domains)
