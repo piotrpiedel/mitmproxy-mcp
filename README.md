@@ -118,7 +118,7 @@ pip install mitmproxy-mcp
 
 * `start_proxy(port=8080)`: Starts the mitmproxy server.
 * `stop_proxy()`: Shuts down the proxy.
-* `set_scope(allowed_domains)`: Filters recorded traffic (e.g., `["api.github.com", "example.com"]`).
+* `set_scope(allowed_domains)`: Filters recorded traffic (e.g., `["api.github.com", "example.com"]`). Each entry matches the domain and its subdomains (`example.com` covers `api.example.com`, not `notexample.com`).
 * `list_tools()`: Returns all exposed MCP tools and input schemas.
 
 ### Inspection
