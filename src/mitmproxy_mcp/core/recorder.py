@@ -1,3 +1,4 @@
+import itertools
 import json
 import os
 import shlex
@@ -436,24 +437,29 @@ class TrafficDB:
 
         Returns:
             Dict with import stats: {"imported": int, "skipped": int, "errors": int}
+
+        Raises:
+            FileNotFoundError, ValueError, FlowReadException: the file is missing,
+                has an unsupported extension, or cannot be parsed. Existing traffic
+                is left untouched in all three cases.
         """
-        if not append:
-            self.clear()
-
-        stats = {"imported": 0, "skipped": 0, "errors": 0}
-
         if not os.path.exists(file_path):
-            print(f"File not found: {file_path}", file=sys.stderr)
-            return stats
+            raise FileNotFoundError(f"File not found: {file_path}")
 
         allowed_exts = ('.har', '.mitm', '.flow')
         if not any(str(file_path).lower().endswith(ext) for ext in allowed_exts):
-            print(f"Unsupported file extension: {file_path}", file=sys.stderr)
-            return stats
+            raise ValueError(f"Unsupported file extension: {file_path}")
+
+        stats = {"imported": 0, "skipped": 0, "errors": 0}
 
         with open(file_path, "rb") as f:
-            reader = FlowReader(f)
-            for flow in reader.stream():
+            flows = FlowReader(f).stream()
+            # Reading the first flow parses a HAR file whole, so a broken file
+            # fails here, before existing traffic is cleared.
+            first = next(flows, None)
+            if not append:
+                self.clear()
+            for flow in itertools.chain([first] if first is not None else [], flows):
                 try:
                     if not isinstance(flow, http.HTTPFlow):
                         stats["skipped"] += 1
