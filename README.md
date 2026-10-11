@@ -116,7 +116,7 @@ pip install mitmproxy-mcp
 
 ### Lifecycle & Configuration
 
-* `start_proxy(port=8080)`: Starts the mitmproxy server.
+* `start_proxy(port=8080, listen_host="127.0.0.1")`: Starts the mitmproxy server. By default it accepts connections from this machine only; `listen_host="0.0.0.0"` lets LAN clients (e.g. a phone) connect, which also exposes the proxy to anyone on the network.
 * `stop_proxy()`: Shuts down the proxy.
 * `set_scope(allowed_domains)`: Filters recorded traffic (e.g., `["api.github.com", "example.com"]`). Each entry matches the domain and its subdomains (`example.com` covers `api.example.com`, not `notexample.com`).
 * `list_tools()`: Returns all exposed MCP tools and input schemas.
