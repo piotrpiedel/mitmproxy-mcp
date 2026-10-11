@@ -4,7 +4,8 @@ import shlex
 import sqlite3
 import sys
 from collections import deque
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import urlparse
 
 from mitmproxy import http
@@ -60,18 +61,46 @@ class SimpleResponse:
         self.body = body
 
 
+DB_PATH_ENV = "MITMPROXY_MCP_DB"
+
+
+def default_db_path() -> str:
+    """Resolves the traffic DB location: $MITMPROXY_MCP_DB, else the XDG data directory.
+
+    Never relative to the working directory: `uv run --directory` and test runs would
+    otherwise share (and clear) the same file.
+    """
+    explicit = os.environ.get(DB_PATH_ENV)
+    if explicit:
+        return os.path.expanduser(explicit)
+    data_home = os.environ.get("XDG_DATA_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "share"
+    )
+    return os.path.join(data_home, "mitmproxy-mcp", "traffic.db")
+
+
 class TrafficDB:
     """Implements SQLite persistence for traffic logs."""
 
-    def __init__(self, db_path: str = "mitm_mcp_traffic.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or default_db_path()
+        os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
         self._init_db()
 
-    def _get_conn(self):
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+    @contextmanager
+    def _get_conn(self) -> Iterator[sqlite3.Connection]:
+        # `with sqlite3.connect(...)` only commits; it never closes the connection.
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_db(self):
         with self._get_conn() as conn:
+            # WAL lets the proxy thread write flows while tools read them.
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS flows (
                     id TEXT PRIMARY KEY,
