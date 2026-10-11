@@ -641,21 +641,11 @@ async def fuzz_endpoint(
     target_headers.pop("Content-Length", None)
     target_headers.pop("Content-Encoding", None)
 
-    # Get baseline response for anomaly detection
-    try:
-        baseline_flow = controller.recorder.db.get_flow_object(flow_id)
-        if baseline_flow and baseline_flow.response:
-            baseline_status = baseline_flow.response.status_code
-        else:
-            baseline_status = 200
-
-        if baseline_flow and baseline_flow.response and baseline_flow.response.content:
-            baseline_len = len(baseline_flow.response.content)
-        else:
-            baseline_len = 0
-    except Exception:
-        baseline_status = 200
-        baseline_len = 0
+    # Baseline for anomaly detection: the recorded response of the original flow.
+    baseline = controller.recorder.db.get_by_ids([flow_id], columns=["id", "status_code", "size"])
+    baseline_row = baseline[0] if baseline else {}
+    baseline_status = (baseline_row.get("response") or {}).get("status_code", 200)
+    baseline_len = baseline_row.get("size") or 0
 
     proxy_url = f"http://127.0.0.1:{controller.port}"
     anomalies = []

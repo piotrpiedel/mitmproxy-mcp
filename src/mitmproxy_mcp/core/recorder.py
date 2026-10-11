@@ -412,6 +412,8 @@ class TrafficDB:
                     if "response_body" in row_keys:
                         resp["body"] = row["response_body"]
                     entry["response"] = resp
+                if "size" in row_keys:
+                    entry["size"] = row["size"]
 
                 results.append(entry)
             return results
