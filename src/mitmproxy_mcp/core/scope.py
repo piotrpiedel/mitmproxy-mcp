@@ -1,6 +1,7 @@
 from mitmproxy import http
 from typing import Iterable, List
 from ..models import ScopeConfig
+from .auth import AUTH_REJECTED_KEY
 
 
 def host_in_scope(host: str, domains: Iterable[str]) -> bool:
@@ -25,6 +26,8 @@ class ScopeManager:
         self.config = config
 
     def is_allowed(self, flow: http.HTTPFlow) -> bool:
+        if flow.metadata.get(AUTH_REJECTED_KEY):
+            return False
         if self.config.allowed_domains:
             if not host_in_scope(flow.request.host, self.config.allowed_domains):
                 return False
