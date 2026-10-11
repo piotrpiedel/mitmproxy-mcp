@@ -30,6 +30,8 @@ htmlcov/
 
 # Runtime data
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.log
 captured_flows.json

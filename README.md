@@ -73,6 +73,18 @@ Then add this to your MCP client configuration, replacing the path with your clo
 }
 ```
 
+### Traffic database location
+
+Captured flows are stored in SQLite at `$XDG_DATA_HOME/mitmproxy-mcp/traffic.db`
+(default `~/.local/share/mitmproxy-mcp/traffic.db`), independent of the working directory.
+Set `MITMPROXY_MCP_DB` to use a different file, e.g. one database per project:
+
+```bash
+claude mcp add mitmproxy-mcp -e MITMPROXY_MCP_DB=~/data/project-a.db -- uvx mitmproxy-mcp
+```
+
+or `"env": {"MITMPROXY_MCP_DB": "/path/to/traffic.db"}` in the JSON configuration above.
+
 ## Installation
 
 ### Option 1: Global Install (with `uv`)
@@ -173,6 +185,9 @@ uv sync
 uv run pytest
 
 ```
+
+The root `conftest.py` points `MITMPROXY_MCP_DB` at a temporary file, so tests (several of
+which clear the database) never touch your captured traffic.
 
 **License:** MIT
 
