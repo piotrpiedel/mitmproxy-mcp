@@ -1272,6 +1272,12 @@ async def launch_chrome_with_proxy(
     Starts the proxy automatically if it is not already running.
     Call close_browser() when done.
 
+    Deprecated when the stealth-browser-mcp server is available: prefer its
+    browser_launch(proxy_url="http://127.0.0.1:<port from start_proxy>", ca_mode="spki").
+    It trusts only the mitmproxy CA instead of disabling certificate checks, applies
+    stealth patches, and returns a session_id for scripted navigation. This tool stays
+    for setups without that server.
+
     Args:
         url: URL to open on launch (empty = blank tab)
         profile: Custom Chrome profile directory (default: ~/.chrome-mitm-profile)
