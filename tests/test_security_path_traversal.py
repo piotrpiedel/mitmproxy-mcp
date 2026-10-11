@@ -45,3 +45,19 @@ async def test_valid_path_allowed(tmp_path):
     finally:
         if local_file.exists():
             os.remove(local_file)
+
+@pytest.mark.asyncio
+async def test_sibling_directory_sharing_name_prefix_denied(tmp_path, monkeypatch):
+    """A sibling such as <cwd>-evil shares the string prefix but is outside the working dir."""
+    project = tmp_path / "project"
+    sibling = tmp_path / "project-evil"
+    project.mkdir()
+    sibling.mkdir()
+    target = sibling / "capture.har"
+    target.write_text('{"log": {"entries": []}}')
+    monkeypatch.chdir(project)
+
+    result = json.loads(await load_traffic_file(str(target)))
+
+    assert result["status"] == "error"
+    assert "Access denied" in result["message"]
