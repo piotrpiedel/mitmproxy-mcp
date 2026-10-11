@@ -15,7 +15,13 @@ class FakePopen:
 
 
 @pytest.mark.asyncio
-async def test_launch_chrome_routes_through_port_of_running_proxy(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("listen_host", "proxy"),
+    [("127.0.0.1", "http://127.0.0.1:9123"), ("::", "http://[::1]:9123")],
+)
+async def test_launch_chrome_routes_through_running_proxy(
+    monkeypatch, tmp_path, listen_host, proxy
+):
     launched = []
 
     def fake_popen(cmd, **kwargs):
@@ -26,10 +32,11 @@ async def test_launch_chrome_routes_through_port_of_running_proxy(monkeypatch, t
     monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(server.controller, "running", True)
     monkeypatch.setattr(server.controller, "port", 9123)
+    monkeypatch.setattr(server.controller, "host", listen_host, raising=False)
     monkeypatch.setattr(server.controller, "browser_process", None)
     monkeypatch.setattr(server.controller, "browser_profile_dir", None, raising=False)
 
     result = json.loads(await server.launch_chrome_with_proxy(profile=str(tmp_path)))
 
-    assert "--proxy-server=http://127.0.0.1:9123" in launched[0].cmd
-    assert result["proxy"] == "http://127.0.0.1:9123"
+    assert f"--proxy-server={proxy}" in launched[0].cmd
+    assert result["proxy"] == proxy

@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import logging
 import os
 import shutil
@@ -49,6 +50,15 @@ logging.basicConfig(
 logger = structlog.get_logger()
 
 
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 class MitmController:
     def __init__(self, dump_file: Optional[str] = None):
         self.master: Optional[DumpMaster] = None
@@ -58,6 +68,7 @@ class MitmController:
         self.recorder = TrafficRecorder(self.scope_manager)
         self.interceptor = TrafficInterceptor()
         self.running = False
+        self.host = "127.0.0.1"
         self.port = 8080
         self.session_variables = {}
         self.dump_file = dump_file
@@ -75,6 +86,18 @@ class MitmController:
 
         return True
 
+    def local_proxy_url(self) -> str:
+        """URL a client on this machine uses to reach the proxy, whatever host it listens on."""
+        host = self.host
+        if host in ("", "0.0.0.0"):
+            host = "127.0.0.1"
+        elif host == "::":
+            # asyncio binds IPv6 sockets as v6-only, so 127.0.0.1 would not reach it.
+            host = "::1"
+        if ":" in host:
+            host = f"[{host}]"
+        return f"http://{host}:{self.port}"
+
     async def start(
         self,
         port: int = 8080,
@@ -85,6 +108,7 @@ class MitmController:
         if self.running:
             return "MITM is already running."
 
+        self.host = host
         self.port = port
         opts = options.Options(listen_host=host, listen_port=port)
 
@@ -112,6 +136,11 @@ class MitmController:
         msg = f"Started proxy on port {port}"
         if save_path:
             msg += f", dumping flows to {save_path}"
+        if not _is_loopback(host):
+            msg += (
+                f". Warning: listening on {host or 'all interfaces'} makes the proxy reachable"
+                " from the network; anyone who can connect can relay traffic through it."
+            )
         return msg
 
     async def stop(self):
@@ -197,7 +226,7 @@ class MitmController:
             mode="stealth",
         )
 
-        proxy_url = f"http://127.0.0.1:{self.port}"
+        proxy_url = self.local_proxy_url()
 
         try:
             async with AsyncSession(
@@ -237,7 +266,10 @@ mcp = FastMCP("Mitmproxy Manager")
 
 @mcp.tool()
 async def start_proxy(
-    port: int = 8080, dump_file: Optional[str] = None, upstream_proxy: Optional[str] = None
+    port: int = 8080,
+    dump_file: Optional[str] = None,
+    upstream_proxy: Optional[str] = None,
+    listen_host: str = "127.0.0.1",
 ) -> str:
     """
     Start the mitmproxy instance.
@@ -246,10 +278,13 @@ async def start_proxy(
         dump_file: Optional file path to save raw mitmproxy .flow data.
             Prefix with + to append to an existing file.
         upstream_proxy: Optional upstream proxy URL (e.g., 'http://user:pass@proxy:port').
+        listen_host: Address to listen on (default 127.0.0.1, this machine only).
+            Use 0.0.0.0 to accept clients from the LAN (e.g. a phone); this exposes
+            the proxy to anyone on the network.
     """
     try:
         return await controller.start(
-            port=port, dump_file=dump_file, upstream_proxy=upstream_proxy
+            host=listen_host, port=port, dump_file=dump_file, upstream_proxy=upstream_proxy
         )
     except Exception as e:
         logger.error("proxy_start_failed", error=str(e))
@@ -654,7 +689,7 @@ async def fuzz_endpoint(
     baseline_status = (baseline_row.get("response") or {}).get("status_code", 200)
     baseline_len = baseline_row.get("size") or 0
 
-    proxy_url = f"http://127.0.0.1:{controller.port}"
+    proxy_url = controller.local_proxy_url()
     anomalies = []
 
     async with AsyncSession(
@@ -1293,10 +1328,11 @@ async def launch_chrome_with_proxy(
 
     profile_dir = profile or os.path.expanduser("~/.chrome-mitm-profile")
     controller.browser_profile_dir = profile_dir
+    proxy_url = controller.local_proxy_url()
 
     cmd = [
         chrome_path,
-        f"--proxy-server=http://127.0.0.1:{controller.port}",
+        f"--proxy-server={proxy_url}",
         f"--user-data-dir={profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -1319,7 +1355,7 @@ async def launch_chrome_with_proxy(
         {
             "chrome": chrome_path,
             "pid": controller.browser_process.pid,
-            "proxy": f"http://127.0.0.1:{controller.port}",
+            "proxy": proxy_url,
             "profile": profile_dir,
             "message": "Chrome launched with proxy. Browse normally — all traffic is captured. Call close_browser() when done.",
         },
@@ -1384,7 +1420,7 @@ async def browse_with_proxy(
         result = await controller.start()
         logger.info("browse_with_proxy_autostarted_proxy", result=result)
 
-    proxy_url = f"http://127.0.0.1:{controller.port}"
+    proxy_url = controller.local_proxy_url()
 
     def _count_flows() -> int:
         with controller.recorder.db._get_conn() as conn:
