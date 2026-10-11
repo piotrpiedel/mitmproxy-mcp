@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 import logging
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -25,6 +26,7 @@ from bs4 import BeautifulSoup
 
 from ..models import ScopeConfig, InterceptionRule
 from .scope import ScopeManager
+from .auth import LanProxyAuth
 from .recorder import TrafficRecorder
 from .interceptor import TrafficInterceptor
 from .generation import normalize_scraper_flows, render_scraper_code
@@ -82,6 +84,7 @@ class MitmController:
         self.scope_manager = ScopeManager(self.scope_config)
         self.recorder = TrafficRecorder(self.scope_manager)
         self.interceptor = TrafficInterceptor()
+        self.proxy_auth: Optional[Tuple[str, str]] = None
         self.running = False
         self.host = "127.0.0.1"
         self.port = 8080
@@ -137,6 +140,11 @@ class MitmController:
             with_termlog=False,
             with_dumper=False,
         )
+        self.proxy_auth = None
+        if not _is_loopback(host):
+            # First, so rejected requests are answered before the recorder or rules see them.
+            self.proxy_auth = ("mitm", secrets.token_urlsafe(18))
+            self.master.addons.add(LanProxyAuth(*self.proxy_auth))
         self.master.addons.add(self.recorder)
         self.master.addons.add(self.interceptor)
 
@@ -151,10 +159,13 @@ class MitmController:
         msg = f"Started proxy on port {port}"
         if save_path:
             msg += f", dumping flows to {save_path}"
-        if not _is_loopback(host):
+        if self.proxy_auth:
+            user, password = self.proxy_auth
             msg += (
                 f". Warning: listening on {host or 'all interfaces'} makes the proxy reachable"
-                " from the network; anyone who can connect can relay traffic through it."
+                " from the network. Clients on other machines must send proxy credentials"
+                f" (user '{user}', password '{password}', new on every start); clients on this"
+                f" machine need none and keep using {self.local_proxy_url()}."
             )
         return msg
 

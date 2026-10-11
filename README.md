@@ -129,7 +129,7 @@ pip install mitmproxy-mcp
 
 ### Lifecycle & Configuration
 
-* `start_proxy(port=8080, listen_host="127.0.0.1")`: Starts the mitmproxy server. By default it accepts connections from this machine only; `listen_host="0.0.0.0"` lets LAN clients (e.g. a phone) connect, which also exposes the proxy to anyone on the network.
+* `start_proxy(port=8080, listen_host="127.0.0.1")`: Starts the mitmproxy server. By default it accepts connections from this machine only; `listen_host="0.0.0.0"` lets LAN clients (e.g. a phone) connect, which also exposes the proxy to anyone on the network. For that reason a non-loopback `listen_host` turns on password protection: the proxy generates a random password on every start (login `mitm`) and returns it in the tool result, so it also lands in your MCP client logs. Clients on this machine (loopback) never need the password, so `launch_chrome_with_proxy`, `browse_with_proxy`, replays and local browsers keep working; clients from another machine get `407 Proxy Authentication Required` until they send `Proxy-Authorization: Basic`. Rejected requests are not recorded.
 * `stop_proxy()`: Shuts down the proxy.
 * `set_scope(allowed_domains)`: Filters recorded traffic (e.g., `["api.github.com", "example.com"]`). Each entry matches the domain and its subdomains (`example.com` covers `api.example.com`, not `notexample.com`).
 * `list_tools()`: Returns all exposed MCP tools and input schemas.
